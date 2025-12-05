@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>平行四边形横竖剪切APP（旋转+移动）</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: Arial, sans-serif;
+        }
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            position: relative;
+            width: 80vw;
+            height: 70vh;
+            min-height: 400px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        #canvas {
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+        }
+        #canvas.drag {
+            cursor: grabbing; /* 平移光标 */
+        }
+        #canvas.vertex-drag {
+            cursor: move; /* 顶点拖动光标 */
+        }
+        #canvas.rotate {
+            cursor: grab; /* 旋转光标 */
+        }
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            background-color: #409eff;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            z-index: 10;
+            position: relative;
+        }
+        button:hover {
+            background-color: #337ecc;
+        }
+        button:disabled {
+            background-color: #b3d4fc;
+            cursor: not-allowed;
+        }
+        button.active {
+            background-color: #67c23a;
+        }
+        .tip {
+            margin-top: 10px;
+            color: #666;
+            font-size: 14px;
+            line-height: 1.8;
+            max-width: 80vw;
+            text-align: center;
+        }
+        .key-hint {
+            color: #ff4949;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .vertex-hint {
+            color: #e6a23c;
+            font-weight: bold;
+        }
+        .rotate-hint {
+            color: #f56c6c;
+            font-weight: bold;
+        }
+        .move-hint {
+            color: #409eff;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <canvas id="canvas"></canvas>
+    </div>
+    <div class="controls">
+        <button id="resetBtn">重置图形</button>
+        <button id="cutBtn" disabled>确认剪切</button>
+        <span class="key-hint">（或按键盘A键）</span>
+        <button id="resetVertexBtn">重置顶点</button>
+        <button id="verticalCutBtn" class="active">竖向剪切（沿高）</button>
+        <button id="horizontalCutBtn">横向剪切（沿高）</button>
+    </div>
+    <div class="tip">
+        <span class="vertex-hint">★ 拖动顶点调整形状 | </span>
+        <span class="move-hint">★ 剪切后点中心平移 | </span>
+        <span class="rotate-hint">★ 点边缘旋转（15°吸附）</span><br>
+        1. 选择剪切方向，鼠标在平行四边形内移动显示剪切预览线；<br>
+        2. 定位后按A键/点击按钮剪切，剪切后生成两个可操作图形；<br>
+        3. <span class="move-hint">平移</span>：按住图形中心红点拖动；<br>
+        4. <span class="rotate-hint">旋转</span>：按住图形边缘拖动（每15°自动吸附）；<br>
+        5. 点击「重置顶点」恢复初始形状，「重置图形」恢复所有状态。
+    </div>
+
+    <script>
+        // 获取画布及上下文
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const cutBtn = document.getElementById('cutBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const resetVertexBtn = document.getElementById('resetVertexBtn');
+        const verticalCutBtn = document.getElementById('verticalCutBtn');
+        const horizontalCutBtn = document.getElementById('horizontalCutBtn');
+        
+        // 方格背景配置
+        const gridConfig = {
+            size: 20, // 方格大小
+            color: '#e5e5e5', // 方格线颜色
+            thickColor: '#ccc', // 每10格的粗线颜色
+            thickStep: 10 // 粗线间隔
+        };
+
+        // 剪切模式（vertical:竖向沿高, horizontal:横向沿高）
+        let cutMode = 'vertical';
+
+        // 适配容器大小
+        function resizeCanvas() {
+            const container = canvas.parentElement;
+            canvas.width = container.offsetWidth;
+            canvas.height = container.offsetHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', () => {
+            resizeCanvas();
+            resetParallelogram();
+            render();
+        });
+
+        // 核心变量
+        let parallelogram = {
+            // 平行四边形顶点（初始居中）
+            vertices: [
+                {x: 0, y: 0, isDragging: false}, // 顶点1 (左上)
+                {x: 0, y: 0, isDragging: false}, // 顶点2 (右上)
+                {x: 0, y: 0, isDragging: false}, // 顶点3 (右下)
+                {x: 0, y: 0, isDragging: false}  // 顶点4 (左下)
+            ],
+            leftX: 0,   // 左边界X
+            rightX: 0,  // 右边界X
+            topY: 0,    // 上边界Y
+            bottomY: 0, // 下边界Y
+            width: 0,   // 水平宽度
+            height: 120,// 垂直高度
+            color: '#409eff',
+            isCut: false,// 是否已剪切
+            vertexSize: 8, // 顶点大小
+            isVertexDragging: false // 是否正在拖动顶点
+        };
+        let scissors = { // 剪刀
+            x: 0, y: 0,
+            size: 30,
+            isShow: false,
+            cutX: null, // 竖向剪切X坐标
+            cutY: null  // 横向剪切Y坐标
+        };
+        let dragInfo = { // 拖动/旋转信息（剪切后图形）
+            isDragging: false,   // 是否平移
+            isRotating: false,   // 是否旋转
+            target: null,        // 'part1'/'part2'
+            offsetX: 0,          // 平移偏移X
+            offsetY: 0,          // 平移偏移Y
+            startAngle: 0,       // 旋转起始角度
+            lastAngle: 0         // 上次旋转角度
+        };
+        let part1 = { // 剪切后第一部分
+            points: [],          // 顶点坐标
+            x: 0, y: 0,         // 平移偏移
+            angle: 0,           // 旋转角度（度）
+            center: {x: 0, y: 0}// 旋转中心
+        };
+        let part2 = { // 剪切后第二部分
+            points: [],
+            x: 0, y: 0,
+            angle: 0,
+            center: {x: 0, y: 0}
+        };
+
+        // 绘制方格背景
+        function drawGrid() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const { size, color, thickColor, thickStep } = gridConfig;
+            
+            // 绘制竖线
+            for (let x = 0; x <= canvas.width; x += size) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.strokeStyle = x % (size * thickStep) === 0 ? thickColor : color;
+                ctx.lineWidth = x % (size * thickStep) === 0 ? 1.5 : 0.5;
+                ctx.stroke();
+            }
+            
+            // 绘制横线
+            for (let y = 0; y <= canvas.height; y += size) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.strokeStyle = y % (size * thickStep) === 0 ? thickColor : color;
+                ctx.lineWidth = y % (size * thickStep) === 0 ? 1.5 : 0.5;
+                ctx.stroke();
+            }
+        }
+
+        // 初始化平行四边形坐标（居中）
+        function resetParallelogram(resetPosition = true) {
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            
+            // 保留当前位置（仅重置顶点形状）
+            const currentCenterX = resetPosition ? centerX : (parallelogram.vertices[0].x + parallelogram.vertices[2].x) / 2;
+            const currentCenterY = resetPosition ? centerY : (parallelogram.vertices[0].y + parallelogram.vertices[2].y) / 2;
+
+            // 设置顶点坐标（标准平行四边形）
+            parallelogram.vertices[0].x = currentCenterX - 100;
+            parallelogram.vertices[0].y = currentCenterY - 60;
+            parallelogram.vertices[1].x = currentCenterX + 100;
+            parallelogram.vertices[1].y = currentCenterY - 60;
+            parallelogram.vertices[2].x = currentCenterX + 140;
+            parallelogram.vertices[2].y = currentCenterY + 60;
+            parallelogram.vertices[3].x = currentCenterX - 60;
+            parallelogram.vertices[3].y = currentCenterY + 60;
+            
+            // 重置顶点拖动状态
+            parallelogram.vertices.forEach(v => v.isDragging = false);
+            parallelogram.isVertexDragging = false;
+            
+            // 计算边界和宽高
+            updateParallelogramBounds();
+            parallelogram.isCut = false;
+            
+            // 重置剪刀和剪切状态
+            scissors.isShow = false;
+            scissors.cutX = null;
+            scissors.cutY = null;
+            cutBtn.disabled = true;
+            
+            // 重置拖动/旋转状态
+            dragInfo = {
+                isDragging: false,
+                isRotating: false,
+                target: null,
+                offsetX: 0,
+                offsetY: 0,
+                startAngle: 0,
+                lastAngle: 0
+            };
+            
+            // 重置分割后图形状态
+            part1 = { points: [], x: 0, y: 0, angle: 0, center: {x: 0, y: 0} };
+            part2 = { points: [], x: 0, y: 0, angle: 0, center: {x: 0, y: 0} };
+        }
+
+        // 更新平行四边形边界、宽度和高度
+        function updateParallelogramBounds() {
+            const vertices = parallelogram.vertices;
+            parallelogram.leftX = Math.min(vertices[0].x, vertices[1].x, vertices[2].x, vertices[3].x);
+            parallelogram.rightX = Math.max(vertices[0].x, vertices[1].x, vertices[2].x, vertices[3].x);
+            parallelogram.topY = Math.min(vertices[0].y, vertices[1].y, vertices[2].y, vertices[3].y);
+            parallelogram.bottomY = Math.max(vertices[0].y, vertices[1].y, vertices[2].y, vertices[3].y);
+            parallelogram.width = parallelogram.rightX - parallelogram.leftX;
+            parallelogram.height = parallelogram.bottomY - parallelogram.topY;
+        }
+
+        // 绘制平行四边形（含顶点）
+        function drawParallelogram() {
+            const vertices = parallelogram.vertices;
+            
+            // 绘制主体
+            ctx.beginPath();
+            ctx.moveTo(vertices[0].x, vertices[0].y);
+            ctx.lineTo(vertices[1].x, vertices[1].y);
+            ctx.lineTo(vertices[2].x, vertices[2].y);
+            ctx.lineTo(vertices[3].x, vertices[3].y);
+            ctx.closePath();
+            ctx.fillStyle = parallelogram.color;
+            ctx.fill();
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // 绘制顶点
+            vertices.forEach((v) => {
+                ctx.beginPath();
+                ctx.arc(v.x, v.y, parallelogram.vertexSize, 0, Math.PI * 2);
+                ctx.fillStyle = v.isDragging ? '#ff4949' : '#fff';
+                ctx.strokeStyle = '#333';
+                ctx.lineWidth = 2;
+                ctx.fill();
+                ctx.stroke();
+            });
+
+            // 绘制剪切预览线
+            if (!parallelogram.isCut) {
+                if (cutMode === 'vertical' && scissors.cutX) {
+                    ctx.beginPath();
+                    ctx.setLineDash([5, 5]);
+                    ctx.moveTo(scissors.cutX, parallelogram.topY);
+                    ctx.lineTo(scissors.cutX, parallelogram.bottomY);
+                    ctx.strokeStyle = '#ff4949';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                } else if (cutMode === 'horizontal' && scissors.cutY) {
+                    ctx.beginPath();
+                    ctx.setLineDash([5, 5]);
+                    const intersection1 = getHorizontalIntersection(vertices[0], vertices[3], scissors.cutY);
+                    const intersection2 = getHorizontalIntersection(vertices[1], vertices[2], scissors.cutY);
+                    ctx.moveTo(intersection1.x, intersection1.y);
+                    ctx.lineTo(intersection2.x, intersection2.y);
+                    ctx.strokeStyle = '#ff4949';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+            }
+        }
+
+        // 计算水平线与线段的交点
+        function getHorizontalIntersection(p1, p2, y) {
+            if (p1.y === p2.y) return {x: p1.x, y: p1.y};
+            const t = (y - p1.y) / (p2.y - p1.y);
+            const x = p1.x + t * (p2.x - p1.x);
+            return {x, y};
+        }
+
+        // 计算垂直线与线段的交点
+        function getVerticalIntersection(p1, p2, x) {
+            if (p1.x === p2.x) return {x: p1.x, y: p1.y};
+            const t = (x - p1.x) / (p2.x - p1.x);
+            const y = p1.y + t * (p2.y - p1.y);
+            return {x, y};
+        }
+
+        // 绘制剪刀图标
+        function drawScissors() {
+            if (!scissors.isShow || parallelogram.isCut) return;
+            ctx.save();
+            ctx.translate(scissors.x, scissors.y);
+            if (cutMode === 'horizontal') ctx.rotate(Math.PI / 2);
+            
+            // 剪刀手柄
+            ctx.beginPath();
+            ctx.moveTo(-scissors.size/2, -scissors.size/4);
+            ctx.lineTo(-scissors.size/4, 0);
+            ctx.lineTo(scissors.size/4, 0);
+            ctx.lineTo(scissors.size/2, scissors.size/4);
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            
+            // 剪刀刀刃
+            ctx.beginPath();
+            ctx.moveTo(-scissors.size/4, 0);
+            ctx.lineTo(scissors.size/6, -scissors.size/6);
+            ctx.moveTo(0, 0);
+            ctx.lineTo(scissors.size/4, 0);
+            ctx.strokeStyle = '#ff4949';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            ctx.restore();
+        }
+
+        // 计算多边形中心（旋转/平移中心）
+        function getPolygonCenter(points) {
+            let sumX = 0, sumY = 0;
+            points.forEach(p => {
+                sumX += p.x;
+                sumY += p.y;
+            });
+            return {
+                x: sumX / points.length,
+                y: sumY / points.length
+            };
+        }
+
+        // 绘制带旋转和平移的多边形
+        function drawRotatedPolygon(part) {
+            if (part.points.length === 0) return;
+            
+            ctx.save();
+            
+            // 计算实际旋转中心（平移后的位置）
+            const centerX = part.center.x + part.x;
+            const centerY = part.center.y + part.y;
+            
+            // 平移到旋转中心 → 旋转 → 平移回原位置
+            ctx.translate(centerX, centerY);
+            ctx.rotate(part.angle * Math.PI / 180);
+            ctx.translate(-centerX, -centerY);
+            
+            // 绘制多边形
+            ctx.beginPath();
+            part.points.forEach((p, idx) => {
+                const x = p.x + part.x;
+                const y = p.y + part.y;
+                idx === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+            });
+            ctx.closePath();
+            
+            // 填充和描边
+            ctx.fillStyle = part === part1 ? '#409eff' : '#67c23a';
+            ctx.fill();
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // 绘制旋转/平移中心标记（红点）
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, 6, 0, Math.PI * 2);
+            ctx.fillStyle = '#ff4949';
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            
+            ctx.restore();
+        }
+
+        // 绘制剪切后的两个图形
+        function drawCutParts() {
+            if (!parallelogram.isCut) return;
+            drawRotatedPolygon(part1);
+            drawRotatedPolygon(part2);
+        }
+
+        // 计算两点之间的角度（度）
+        function getAngleBetweenPoints(cx, cy, mx, my) {
+            const dx = mx - cx;
+            const dy = my - cy;
+            let angle = Math.atan2(dy, dx) * 180 / Math.PI;
+            return angle < 0 ? angle + 360 : angle;
+        }
+
+        // 角度吸附（每15度）
+        function snapAngle(angle) {
+            const snapStep = 15;
+            return Math.round(angle / snapStep) * snapStep;
+        }
+
+        // 分割平行四边形（横竖剪切适配）
+        function splitParallelogram() {
+            const vertices = parallelogram.vertices;
+            if (cutMode === 'vertical' && scissors.cutX) {
+                // 竖向分割（沿垂直高）
+                const topIntersection = getVerticalIntersection(vertices[0], vertices[1], scissors.cutX);
+                const bottomIntersection = getVerticalIntersection(vertices[3], vertices[2], scissors.cutX);
+                
+                // 左侧部分
+                part1.points = [
+                    {x: vertices[0].x, y: vertices[0].y},
+                    {x: topIntersection.x, y: topIntersection.y},
+                    {x: bottomIntersection.x, y: bottomIntersection.y},
+                    {x: vertices[3].x, y: vertices[3].y}
+                ];
+                // 右侧部分
+                part2.points = [
+                    {x: topIntersection.x, y: topIntersection.y},
+                    {x: vertices[1].x, y: vertices[1].y},
+                    {x: vertices[2].x, y: vertices[2].y},
+                    {x: bottomIntersection.x, y: bottomIntersection.y}
+                ];
+            } else if (cutMode === 'horizontal' && scissors.cutY) {
+                // 横向分割（沿水平高）
+                const leftIntersection = getHorizontalIntersection(vertices[0], vertices[3], scissors.cutY);
+                const rightIntersection = getHorizontalIntersection(vertices[1], vertices[2], scissors.cutY);
+                
+                // 上侧部分
+                part1.points = [
+                    {x: vertices[0].x, y: vertices[0].y},
+                    {x: vertices[1].x, y: vertices[1].y},
+                    {x: rightIntersection.x, y: rightIntersection.y},
+                    {x: leftIntersection.x, y: leftIntersection.y}
+                ];
+                // 下侧部分
+                part2.points = [
+                    {x: leftIntersection.x, y: leftIntersection.y},
+                    {x: rightIntersection.x, y: rightIntersection.y},
+                    {x: vertices[2].x, y: vertices[2].y},
+                    {x: vertices[3].x, y: vertices[3].y}
+                ];
+            }
+            
+            // 初始化平移和旋转参数
+            part1.x = 0; part1.y = 0; part1.angle = 0;
+            part2.x = 0; part2.y = 0; part2.angle = 0;
+            part1.center = getPolygonCenter(part1.points);
+            part2.center = getPolygonCenter(part2.points);
+        }
+
+        // 检测点是否在平行四边形内
+        function isPointInParallelogram(px, py) {
+            // 快速边界检测
+            if (px < parallelogram.leftX - 5 || px > parallelogram.rightX + 5 ||
+                py < parallelogram.topY - 5 || py > parallelogram.bottomY + 5) {
+                return false;
+            }
+            
+            // 射线法精细检测
+            const vertices = parallelogram.vertices;
+            let inside = false;
+            for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+                const xi = vertices[i].x, yi = vertices[i].y;
+                const xj = vertices[j].x, yj = vertices[j].y;
+                const intersect = ((yi > py) !== (yj > py)) && 
+                    (px < (xj - xi) * (py - yi + 0.0001) / (yj - yi + 0.0001) + xi);
+                if (intersect) inside = !inside;
+            }
+            return inside;
+        }
+
+        // 检测点是否在旋转后的多边形内
+        function isPointInRotatedPolygon(px, py, part) {
+            if (part.points.length === 0) return false;
+            
+            // 反向旋转鼠标坐标（转换到原始坐标系）
+            const centerX = part.center.x + part.x;
+            const centerY = part.center.y + part.y;
+            const dx = px - centerX;
+            const dy = py - centerY;
+            const angleRad = -part.angle * Math.PI / 180;
+            
+            // 旋转公式：x' = x*cosθ - y*sinθ; y' = x*sinθ + y*cosθ
+            const rotatedX = dx * Math.cos(angleRad) - dy * Math.sin(angleRad) + centerX;
+            const rotatedY = dx * Math.sin(angleRad) + dy * Math.cos(angleRad) + centerY;
+            
+            // 检测是否在原始多边形内
+            return isPointInPolygon(rotatedX, rotatedY, part.points, part.x, part.y);
+        }
+
+        // 检测点是否在多边形内（基础版）
+        function isPointInPolygon(px, py, points, offsetX, offsetY) {
+            let inside = false;
+            for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+                const xi = points[i].x + offsetX, yi = points[i].y + offsetY;
+                const xj = points[j].x + offsetX, yj = points[j].y + offsetY;
+                const intersect = ((yi > py) !== (yj > py)) && 
+                    (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
+                if (intersect) inside = !inside;
+            }
+            return inside;
+        }
+
+        // 检测是否点击旋转/平移中心
+        function isClickOnCenter(px, py, part) {
+            const centerX = part.center.x + part.x;
+            const centerY = part.center.y + part.y;
+            const distance = Math.hypot(px - centerX, py - centerY);
+            return distance <= 12; // 点击检测范围（扩大至12px）
+        }
+
+        // 渲染画布
+        function render() {
+            drawGrid();
+            if (!parallelogram.isCut) {
+                drawParallelogram();
+            } else {
+                drawCutParts();
+            }
+            drawScissors();
+        }
+
+        // 执行剪切操作
+        function doCut() {
+            if (parallelogram.isCut || cutBtn.disabled) return;
+            if ((cutMode === 'vertical' && !scissors.cutX) || (cutMode === 'horizontal' && !scissors.cutY)) return;
+            
+            parallelogram.isCut = true;
+            splitParallelogram();
+            scissors.isShow = false;
+            cutBtn.disabled = true;
+            render();
+        }
+
+        // 切换剪切模式
+        function switchCutMode(mode) {
+            cutMode = mode;
+            verticalCutBtn.classList.toggle('active', mode === 'vertical');
+            horizontalCutBtn.classList.toggle('active', mode === 'horizontal');
+            scissors.isShow = false;
+            scissors.cutX = null;
+            scissors.cutY = null;
+            cutBtn.disabled = true;
+            render();
+        }
+
+        // 检测是否点击顶点
+        function checkVertexClick(px, py) {
+            let targetVertex = null;
+            parallelogram.vertices.forEach((v) => {
+                const distance = Math.hypot(px - v.x, py - v.y);
+                if (distance <= parallelogram.vertexSize + 5) {
+                    targetVertex = v;
+                    v.isDragging = true;
+                    parallelogram.isVertexDragging = true;
+                    canvas.classList.add('vertex-drag');
+                }
+            });
+            return targetVertex;
+        }
+
+        // ========== 事件绑定 ==========
+        // 重置图形（位置+形状）
+        resetBtn.addEventListener('click', () => {
+            resetParallelogram(true);
+            render();
+        });
+
+        // 重置顶点（仅重置形状，保留位置）
+        resetVertexBtn.addEventListener('click', () => {
+            resetParallelogram(false);
+            render();
+        });
+
+        // 切换竖向剪切
+        verticalCutBtn.addEventListener('click', () => switchCutMode('vertical'));
+
+        // 切换横向剪切
+        horizontalCutBtn.addEventListener('click', () => switchCutMode('horizontal'));
+
+        // 确认剪切按钮
+        cutBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            doCut();
+        });
+
+        // 键盘A键触发剪切
+        document.addEventListener('keydown', (e) => {
+            if (e.key.toLowerCase() === 'a' && !cutBtn.disabled) {
+                e.preventDefault();
+                doCut();
+            }
+        });
+
+        // 鼠标按下（顶点拖动/图形平移/旋转）
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            // 优先处理顶点拖动
+            if (checkVertexClick(mouseX, mouseY)) return;
+
+            // 处理剪切后图形操作
+            if (parallelogram.isCut) {
+                // 检测part1
+                if (isPointInRotatedPolygon(mouseX, mouseY, part1)) {
+                    dragInfo.target = 'part1';
+                    const isCenterClick = isClickOnCenter(mouseX, mouseY, part1);
+                    
+                    if (isCenterClick) {
+                        // 平移模式
+                        dragInfo.isDragging = true;
+                        dragInfo.isRotating = false;
+                        dragInfo.offsetX = mouseX - (part1.x + part1.center.x);
+                        dragInfo.offsetY = mouseY - (part1.y + part1.center.y);
+                        canvas.classList.add('drag');
+                    } else {
+                        // 旋转模式
+                        dragInfo.isRotating = true;
+                        dragInfo.isDragging = false;
+                        const centerX = part1.center.x + part1.x;
+                        const centerY = part1.center.y + part1.y;
+                        dragInfo.startAngle = getAngleBetweenPoints(centerX, centerY, mouseX, mouseY) - part1.angle;
+                        canvas.classList.add('rotate');
+                    }
+                    return;
+                }
+
+                // 检测part2
+                if (isPointInRotatedPolygon(mouseX, mouseY, part2)) {
+                    dragInfo.target = 'part2';
+                    const isCenterClick = isClickOnCenter(mouseX, mouseY, part2);
+                    
+                    if (isCenterClick) {
+                        // 平移模式
+                        dragInfo.isDragging = true;
+                        dragInfo.isRotating = false;
+                        dragInfo.offsetX = mouseX - (part2.x + part2.center.x);
+                        dragInfo.offsetY = mouseY - (part2.y + part2.center.y);
+                        canvas.classList.add('drag');
+                    } else {
+                        // 旋转模式
+                        dragInfo.isRotating = true;
+                        dragInfo.isDragging = false;
+                        const centerX = part2.center.x + part2.x;
+                        const centerY = part2.center.y + part2.y;
+                        dragInfo.startAngle = getAngleBetweenPoints(centerX, centerY, mouseX, mouseY) - part2.angle;
+                        canvas.classList.add('rotate');
+                    }
+                    return;
+                }
+            }
+        });
+
+        // 鼠标移动（顶点拖动/剪切定位/图形平移/旋转）
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            // 1. 顶点拖动
+            if (parallelogram.isVertexDragging) {
+                parallelogram.vertices.forEach((v) => {
+                    if (v.isDragging) {
+                        // 吸附到方格
+                        v.x = Math.round(mouseX / gridConfig.size) * gridConfig.size;
+                        v.y = Math.round(mouseY / gridConfig.size) * gridConfig.size;
+                    }
+                });
+                updateParallelogramBounds();
+                render();
+                return;
+            }
+
+            // 2. 剪切后图形操作
+            if (dragInfo.target) {
+                const targetPart = dragInfo.target === 'part1' ? part1 : part2;
+                
+                // 2.1 平移操作
+                if (dragInfo.isDragging) {
+                    targetPart.x = mouseX - dragInfo.offsetX - targetPart.center.x;
+                    targetPart.y = mouseY - dragInfo.offsetY - targetPart.center.y;
+                    render();
+                    return;
+                }
+                
+                // 2.2 旋转操作
+                if (dragInfo.isRotating) {
+                    const centerX = targetPart.center.x + targetPart.x;
+                    const centerY = targetPart.center.y + targetPart.y;
+                    const currentAngle = getAngleBetweenPoints(centerX, centerY, mouseX, mouseY);
+                    let newAngle = currentAngle - dragInfo.startAngle;
+                    
+                    // 角度吸附+范围限制
+                    newAngle = snapAngle(newAngle) % 360;
+                    newAngle = newAngle < 0 ? newAngle + 360 : newAngle;
+                    
+                    targetPart.angle = newAngle;
+                    render();
+                    return;
+                }
+            }
+
+            // 3. 剪切位置定位（未剪切时）
+            if (!parallelogram.isCut) {
+                if (isPointInParallelogram(mouseX, mouseY)) {
+                    if (cutMode === 'vertical') {
+                        // 竖向剪切：限制X范围
+                        const clampX = Math.max(parallelogram.leftX + 5, Math.min(parallelogram.rightX - 5, mouseX));
+                        scissors.cutX = clampX;
+                        scissors.x = clampX;
+                        scissors.y = parallelogram.topY + parallelogram.height / 2;
+                    } else {
+                        // 横向剪切：限制Y范围
+                        const clampY = Math.max(parallelogram.topY + 5, Math.min(parallelogram.bottomY - 5, mouseY));
+                        scissors.cutY = clampY;
+                        const leftInter = getHorizontalIntersection(parallelogram.vertices[0], parallelogram.vertices[3], clampY);
+                        const rightInter = getHorizontalIntersection(parallelogram.vertices[1], parallelogram.vertices[2], clampY);
+                        scissors.x = (leftInter.x + rightInter.x) / 2;
+                        scissors.y = clampY;
+                    }
+                    scissors.isShow = true;
+                    cutBtn.disabled = false;
+                } else {
+                    scissors.isShow = false;
+                    scissors.cutX = null;
+                    scissors.cutY = null;
+                    cutBtn.disabled = true;
+                }
+                render();
+            }
+        });
+
+        // 鼠标松开（结束所有拖动/旋转）
+        canvas.addEventListener('mouseup', () => {
+            // 重置顶点拖动
+            parallelogram.vertices.forEach(v => v.isDragging = false);
+            parallelogram.isVertexDragging = false;
+            canvas.classList.remove('vertex-drag');
+            
+            // 重置图形操作
+            dragInfo.isDragging = false;
+            dragInfo.isRotating = false;
+            dragInfo.target = null;
+            canvas.classList.remove('drag', 'rotate');
+        });
+
+        // 鼠标离开画布
+        canvas.addEventListener('mouseleave', () => {
+            parallelogram.vertices.forEach(v => v.isDragging = false);
+            parallelogram.isVertexDragging = false;
+            canvas.classList.remove('vertex-drag', 'drag', 'rotate');
+            
+            dragInfo.isDragging = false;
+            dragInfo.isRotating = false;
+            dragInfo.target = null;
+            
+            if (!parallelogram.isCut) {
+                scissors.isShow = false;
+                scissors.cutX = null;
+                scissors.cutY = null;
+                cutBtn.disabled = true;
+                render();
+            }
+        });
+
+        // 初始化
+        resetParallelogram();
+        render();
+    </script>
+</body>
+</html>
